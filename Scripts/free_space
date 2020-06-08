@@ -1,0 +1,297 @@
+--https://www.mssqltips.com/sqlservertip/1629/determine-free-space-consumed-space-and-total-space-allocated-for-sql-server-databases/
+Problem
+I've seen so many different options and scripts for determining free space, consumed space, and total space allocated for 
+databases in Microsoft SQL Server.  Problem is none ever seem to give me all the information.  I need to run one script to 
+see this information for the log file and a different one for the data files.  Is there anything out there that provides this
+information universally?
+
+Solution
+Ah, the classic and prevalent problem with most applications rears its ugly head in SQL Server as well: Consistency Fail. 
+Reader you are absolutely correct.  If we take a look at what you were referring to first I'll offer up a suggestion for a
+single-sourcing stored procedure for space consumption in your SQL Server databases.
+
+Log File Space Metadata
+DBCC SQLPERF(logspace)
+
+DBCC SQLPERF(logspace) is an absolutely functional command if you are only interested in consumption of your database log files.
+It provides the cumulative size for each log file for each database on the SQL Server instance as well as the amount of space 
+consumed (as a percentage of total log file size).  A drawback is the fact that the results are an aggregate for the database. 
+If you have multiple log files the results are displayed at the database level, not at the file level.  While this DBCC command
+is handy when you are reviewing issues that arise out of inadequate log backup scheduling or incorrect log file sizing, it
+does not give you all the information you need to make informed decisions on sizing your log files, adjusting you backup 
+schedule frequency or recovery model.
+
+Data File Space Metadata
+DBCC SHOWFILESTATS WITH NO_INFOMSGS
+
+This DBCC command provides us with similar, yet more-granular information about the data files for the current database.  
+Whereas DBCC SQLPERF(logspace) returns it's results in megabytes, DBCC SHOWFILESTATS presents its results in extents.  
+The inconsistency bus is making it's first stop here.  For those of you who may be newer to SQL Server, and there are plenty 
+of you out there  - welcome to the party - an extent is made up of eight pages and each page is 8 KB in size.  Each page 
+starts with a 96 byte header that stores internal metadata about the page (page number, page type, amount of free space, etc).
+Therefore, if you need to convert results from extents to megabytes the following formulas are a good rule-of-thumb to tuck 
+away for when you need it:
+
+Page = 8Kb -----> Extent = 8 pages :: Extents = 64Kb
+MB = 1024Kb :: MB = 16 Extents
+Therefore, in the example above we would need to run a conversion from Extents to MBs and would see that the two data files 
+are (32 * 16) or 512 MB in size.  We will be making use of these conversions later in this tip.
+
+A Combined, Limited Solution
+Most seasoned SQL Server DBAs have tapped into the system tables and views at one time or another.  The system tables were 
+hidden as of SQL Server 2005, but in their place were views that presented the same information, under the same object naming
+conventions as their predecessors, the system tables.  The following code provides us with not only sizing information, but 
+also auto growth settings.  All this is available via the sys.database_files system view in each database.
+
+SELECT *, 
+   [name],  
+   physical_name,  
+   size, 
+   type_desc, 
+   growth, 
+   max_size 
+FROM sys.database_files 
+ORDER BY [type], [file_id]
+
+The downside once again is the scope.  Since the sys.database_files view is stored within each database - the results are 
+imited to the current database.  Furthermore, the units of measure are different within the confines of this table. 
+Auto growth settings are presented in KB, when the auto growth is based upon size, not percentage; the unit-of-measure for
+the files sizes are in extents.  The result set is confusing in regards to the auto growth increments.  It is impossible to
+discern whether the individual log and data files are going to grow as a percentage of file size or at a fixed value.  
+This problem is indicative of a problem with relying upon the system views.  For backward capacity purposes, we are forced 
+into using view structures based upon the structures of system tables going back to initial versions of Microsoft SQL Server.
+We SQL Server Professionals have been told for years not to rely upon the system tables for information because they may 
+change in future releases.  However, the prevalence of tapping into these tables for various "home-grown" metadata and monitor
+ing purposes put Microsoft into a box and forced them to support these out-dated or in most cases inadequate repository 
+structures.  I am quite sure that the developers in Redmond know that they have inconsistently formatted or incomplete data 
+in their tables that they are unable to modify.
+
+An All-In-One Solution
+CREATE PROCEDURE dbo.usp_Sizing @Granularity VARCHAR(10) = NULL, @Database_Name sysname = NULL AS   
+DECLARE @SQL VARCHAR(5000)   
+
+IF EXISTS (SELECT NAME FROM tempdb..sysobjects WHERE NAME = '##Results')    
+   BEGIN    
+       DROP TABLE ##Results    
+   END   
+      
+CREATE TABLE ##Results ([Database Name] sysname, 
+[File Name] sysname, 
+[Physical Name] NVARCHAR(260),
+[File Type] VARCHAR(4), 
+[Total Size in Mb] INT, 
+[Available Space in Mb] INT, 
+[Growth Units] VARCHAR(15), 
+[Max File Size in Mb] INT)   
+
+SELECT @SQL =    
+'USE [?] INSERT INTO ##Results([Database Name], [File Name], [Physical Name],    
+[File Type], [Total Size in Mb], [Available Space in Mb],    
+[Growth Units], [Max File Size in Mb])    
+SELECT DB_NAME(),   
+[name] AS [File Name],    
+physical_name AS [Physical Name],    
+[File Type] =    
+CASE type   
+WHEN 0 THEN ''Data'''    
++   
+           'WHEN 1 THEN ''Log'''   
++   
+       'END,   
+[Total Size in Mb] =   
+CASE ceiling([size]/128)    
+WHEN 0 THEN 1   
+ELSE ceiling([size]/128)   
+END,   
+[Available Space in Mb] =    
+CASE ceiling([size]/128)   
+WHEN 0 THEN (1 - CAST(FILEPROPERTY([name], ''SpaceUsed''' + ') as int) /128)   
+ELSE (([size]/128) - CAST(FILEPROPERTY([name], ''SpaceUsed''' + ') as int) /128)   
+END,   
+[Growth Units]  =    
+CASE [is_percent_growth]    
+WHEN 1 THEN CAST(growth AS varchar(20)) + ''%'''   
++   
+           'ELSE CAST(growth*8/1024 AS varchar(20)) + ''Mb'''   
++   
+       'END,   
+[Max File Size in Mb] =    
+CASE [max_size]   
+WHEN -1 THEN NULL   
+WHEN 268435456 THEN NULL   
+ELSE [max_size]   
+END   
+FROM sys.database_files   
+ORDER BY [File Type], [file_id]'   
+
+--Print the command to be issued against all databases   
+PRINT @SQL   
+
+--Run the command against each database   
+EXEC sp_MSforeachdb @SQL   
+
+--UPDATE ##Results SET [Free Space %] = [Available Space in Mb]/[Total Size in Mb] * 100   
+
+--Return the Results   
+--If @Database_Name is NULL:   
+IF @Database_Name IS NULL   
+   BEGIN   
+       IF @Granularity = 'Database'   
+           BEGIN   
+               SELECT    
+               T.[Database Name],   
+               T.[Total Size in Mb] AS [DB Size (Mb)],   
+               T.[Available Space in Mb] AS [DB Free (Mb)],   
+               T.[Consumed Space in Mb] AS [DB Used (Mb)],   
+               D.[Total Size in Mb] AS [Data Size (Mb)],   
+               D.[Available Space in Mb] AS [Data Free (Mb)],   
+               D.[Consumed Space in Mb] AS [Data Used (Mb)],   
+               CEILING(CAST(D.[Available Space in Mb] AS decimal(10,1))/D.[Total Size in Mb]*100) AS [Data Free %],   
+               L.[Total Size in Mb] AS [Log Size (Mb)],   
+               L.[Available Space in Mb] AS [Log Free (Mb)],   
+               L.[Consumed Space in Mb] AS [Log Used (Mb)],   
+               CEILING(CAST(L.[Available Space in Mb] AS decimal(10,1))/L.[Total Size in Mb]*100) AS [Log Free %]   
+               FROM    
+                   (   
+                   SELECT [Database Name],   
+                       SUM([Total Size in Mb]) AS [Total Size in Mb],   
+                       SUM([Available Space in Mb]) AS [Available Space in Mb],   
+                       SUM([Total Size in Mb]-[Available Space in Mb]) AS [Consumed Space in Mb]    
+                   FROM ##Results   
+                   GROUP BY [Database Name]   
+                   ) AS T   
+                   INNER JOIN    
+                   (   
+                   SELECT [Database Name],   
+                       SUM([Total Size in Mb]) AS [Total Size in Mb],   
+                       SUM([Available Space in Mb]) AS [Available Space in Mb],   
+                       SUM([Total Size in Mb]-[Available Space in Mb]) AS [Consumed Space in Mb]    
+                   FROM ##Results   
+                   WHERE ##Results.[File Type] = 'Data'   
+                   GROUP BY [Database Name]   
+                   ) AS D ON T.[Database Name] = D.[Database Name]   
+                   INNER JOIN   
+                   (   
+                   SELECT [Database Name],   
+                       SUM([Total Size in Mb]) AS [Total Size in Mb],   
+                       SUM([Available Space in Mb]) AS [Available Space in Mb],   
+                       SUM([Total Size in Mb]-[Available Space in Mb]) AS [Consumed Space in Mb]    
+                   FROM ##Results   
+                   WHERE ##Results.[File Type] = 'Log'   
+                   GROUP BY [Database Name]   
+                   ) AS L ON T.[Database Name] = L.[Database Name]   
+               ORDER BY D.[Database Name]   
+           END   
+   ELSE   
+       BEGIN   
+           SELECT [Database Name],   
+               [File Name],   
+               [Physical Name],   
+               [File Type],   
+               [Total Size in Mb] AS [DB Size (Mb)],   
+               [Available Space in Mb] AS [DB Free (Mb)],   
+               CEILING(CAST([Available Space in Mb] AS decimal(10,1)) / [Total Size in Mb]*100) AS [Free Space %],   
+               [Growth Units],   
+               [Max File Size in Mb] AS [Grow Max Size (Mb)]    
+           FROM ##Results    
+       END   
+   END   
+
+--Return the Results   
+--If @Database_Name is provided   
+ELSE   
+   BEGIN   
+       IF @Granularity = 'Database'   
+           BEGIN   
+               SELECT    
+               T.[Database Name],   
+               T.[Total Size in Mb] AS [DB Size (Mb)],   
+               T.[Available Space in Mb] AS [DB Free (Mb)],   
+               T.[Consumed Space in Mb] AS [DB Used (Mb)],   
+               D.[Total Size in Mb] AS [Data Size (Mb)],   
+               D.[Available Space in Mb] AS [Data Free (Mb)],   
+               D.[Consumed Space in Mb] AS [Data Used (Mb)],   
+               CEILING(CAST(D.[Available Space in Mb] AS decimal(10,1))/D.[Total Size in Mb]*100) AS [Data Free %],   
+               L.[Total Size in Mb] AS [Log Size (Mb)],   
+               L.[Available Space in Mb] AS [Log Free (Mb)],   
+               L.[Consumed Space in Mb] AS [Log Used (Mb)],   
+               CEILING(CAST(L.[Available Space in Mb] AS decimal(10,1))/L.[Total Size in Mb]*100) AS [Log Free %]   
+               FROM    
+                   (   
+                   SELECT [Database Name],   
+                       SUM([Total Size in Mb]) AS [Total Size in Mb],   
+                       SUM([Available Space in Mb]) AS [Available Space in Mb],   
+                       SUM([Total Size in Mb]-[Available Space in Mb]) AS [Consumed Space in Mb]    
+                   FROM ##Results   
+                   WHERE [Database Name] = @Database_Name   
+                   GROUP BY [Database Name]   
+                   ) AS T   
+                   INNER JOIN    
+                   (   
+                   SELECT [Database Name],   
+                       SUM([Total Size in Mb]) AS [Total Size in Mb],   
+                       SUM([Available Space in Mb]) AS [Available Space in Mb],   
+                       SUM([Total Size in Mb]-[Available Space in Mb]) AS [Consumed Space in Mb]    
+                   FROM ##Results   
+                   WHERE ##Results.[File Type] = 'Data'   
+                       AND [Database Name] = @Database_Name   
+                   GROUP BY [Database Name]   
+                   ) AS D ON T.[Database Name] = D.[Database Name]   
+                   INNER JOIN   
+                   (   
+                   SELECT [Database Name],   
+                       SUM([Total Size in Mb]) AS [Total Size in Mb],   
+                       SUM([Available Space in Mb]) AS [Available Space in Mb],   
+                       SUM([Total Size in Mb]-[Available Space in Mb]) AS [Consumed Space in Mb]    
+                   FROM ##Results   
+                   WHERE ##Results.[File Type] = 'Log'   
+                       AND [Database Name] = @Database_Name   
+                   GROUP BY [Database Name]   
+                   ) AS L ON T.[Database Name] = L.[Database Name]   
+               ORDER BY D.[Database Name]   
+           END   
+       ELSE   
+           BEGIN   
+               SELECT [Database Name],   
+               [File Name],   
+               [Physical Name],   
+               [File Type],   
+               [Total Size in Mb] AS [DB Size (Mb)],   
+               [Available Space in Mb] AS [DB Free (Mb)],   
+               CEILING(CAST([Available Space in Mb] AS decimal(10,1))/[Total Size in Mb]*100) AS [Free Space %],   
+               [Growth Units],   
+               [Max File Size in Mb] AS [Grow Max Size (Mb)]    
+               FROM ##Results    
+               WHERE [Database Name] = @Database_Name   
+           END   
+   END   
+DROP TABLE ##Results   
+------
+
+Examples
+File-Level Granularity this option will provide you with information for each data and log file for every database on your 
+SQL Server instance.  Specific metrics include naming information (logical and physical) in addition to file type, sizing, 
+free space, and file auto growth information.  A NULL value for the Grow Max Size (MB) column simply means that there is no
+maximum size set for the specific file.  You will receive these results if you specify anything other than 'Database' for 
+the @Granularity parameter (including NULL).
+
+--Example Execution 1 
+EXEC dbo.usp_Sizing  
+
+By specifying a value for the @Database_Name parameter we simply limit the results to a single database:
+--Example Execution 2
+EXEC dbo.usp_Sizing NULL, 'Foo'  
+
+Database-Level Granularity:  By passing 'Database' as the value for the @Granularity parameter, the results are slightly 
+different in that the results are aggregated by database.  Since this is the case, metrics pertaining to growth are omitted.
+--Example Execution 3
+EXEC dbo.usp_Sizing 'Database' 
+
+Just as specifying a database name parameter value limited the results for the file granularity, so will specifying a 
+database name at the database granularity:
+--Example Execution 4
+EXEC dbo.usp_Sizing 'Database', 'Foo' 
+
+
+
+
