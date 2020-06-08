@@ -1,0 +1,16 @@
+# Saber la version inicial de cada base de datos
+#'10.177.154.91','10.176.56.220','10.176.56.221' | Invoke-Sqlcmd -Query "Select top 1 Cast(@@ServerName as varchar) [SrvName], Cast(@@Version as varchar(100))[Version],getdate()[Date]" 
+
+
+.\ShutdownSQL2014.ps1 -IPes '10.176.56.220','10.176.56.221','10.177.154.91'
+
+Enter-PSSession -ComputerName '10.177.154.91' -Credential 'gb\ibmjjluna'
+Enter-PSSession -ComputerName '10.176.56.220' -Credential 'gb\ibmjjluna'
+Enter-PSSession -ComputerName '10.176.56.212' -Credential 'gb\bolprd_sql'
+
+
+Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+
+.\SQLServer2014-KB4500181-x64.exe /extract:"B:\PatchSql\KB4500181" /quiet
+
+.\setup.exe /q /allinstances
