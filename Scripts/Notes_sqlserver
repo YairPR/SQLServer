@@ -9,6 +9,7 @@ DBCC SQLPERF(logspace)
 -- uptime
 systeminfo | find "Boot"
 
+--https://www.sqlshack.com/read-sql-server-error-logs-using-the-xp_readerrorlog-command/
 --ERRORLOG LOCATION
 SELECT SERVERPROPERTY('ErrorLogFileName') AS 'Error log file location';
 
