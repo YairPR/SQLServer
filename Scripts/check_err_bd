@@ -1,0 +1,5 @@
+
+Select db_name(database_id),* from sys.master_files
+
+
+ALTER DATABASE YanbalReportsODS SET ONLINE
