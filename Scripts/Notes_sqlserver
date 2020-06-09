@@ -4,9 +4,12 @@ go
 sp_spaceused
 go
 
-
 DBCC SQLPERF(logspace)
-
 
 -- uptime
 systeminfo | find "Boot"
+
+--ERRORLOG LOCATION
+SELECT SERVERPROPERTY('ErrorLogFileName') AS 'Error log file location';
+
+xp_readerrorlog
