@@ -6,3 +6,7 @@ go
 
 
 DBCC SQLPERF(logspace)
+
+
+-- uptime
+systeminfo | find "Boot"
