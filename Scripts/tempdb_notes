@@ -1,0 +1,24 @@
+SELECT name, physical_name, ((size*8)/1024) AS [Size in MB] FROM sys.master_files WHERE database_id = 2 ORDER BY 'name';
+
+Shrink All Tempdb Datafiles Script:
+---Change the size in MB to shrink to---
+DECLARE @size NVARCHAR(10) = 1024
+----------------------------------------
+DECLARE @info nvarchar(max)
+DECLARE @file nvarchar(max)
+DECLARE @q1 nvarchar(max)
+DECLARE tempdb_cursor cursor for
+SELECT NAME FROM sys.master_files WHERE database_id = 2 AND NAME !='templog';
+OPEN tempdb_cursor
+FETCH NEXT FROM tempdb_cursor into @info
+while @@fetch_status = 0
+BEGIN
+SET @info = @info
+SET @q1 = 'USE [tempdb] DBCC SHRINKFILE (''' + @info + ''' , ' + @size + ')'
+--EXEC @Q1
+PRINT @q1
+FETCH NEXT FROM tempdb_cursor
+INTO @info
+END
+CLOSE tempdb_cursor;
+DEALLOCATE tempdb_cursor;
