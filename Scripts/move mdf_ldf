@@ -1,0 +1,20 @@
+SELECT name, physical_name AS CurrentLocation, state_desc
+FROM sys.master_files
+WHERE database_id = DB_ID(N'SIT');
+
+D:\Program Files\Microsoft SQL Server\MSSQL13.MSSQLSERVER\MSSQL\DATA\SIT.mdf
+
+D\Program Files\Microsoft SQL Server\MSSQL13.MSSQLSERVER\MSSQL\DATA\SIT_log.ldf
+
+use master
+ALTER DATABASE SIT set offline WITH ROLLBACK IMMEDIATE;
+GO
+
+ALTER DATABASE SIT MODIFY FILE (NAME= SIT, FILENAME = 'D:\MSSQL\DATA\SIT.mdf');
+GO
+ALTER DATABASE SIT MODIFY FILE ( NAME = SIT_log, FILENAME = 'L:\MSSQL\LOG\SIT_log.ldf');
+GO
+
+use master
+ALTER DATABASE SIT set oNLINE;
+GO
